@@ -250,6 +250,50 @@ def write_title(ws, row, col, text):
 
 
 # =========================
+# 웹 표시용 보조 함수
+# =========================
+def add_total_row(df: pd.DataFrame, label_col: str, label_name: str = "합계") -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    total_data = {}
+    for col in df.columns:
+        if col == label_col:
+            total_data[col] = label_name
+        else:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                total_data[col] = df[col].sum()
+            else:
+                total_data[col] = ""
+
+    total_df = pd.DataFrame([total_data])
+    return pd.concat([df, total_df], ignore_index=True)
+
+
+def format_df_for_display(df: pd.DataFrame):
+    if df.empty:
+        return df.style
+
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    fmt = {c: "{:,.0f}" for c in num_cols}
+    return df.style.format(fmt)
+
+
+def filter_order_rows_by_selection(df: pd.DataFrame, label_col: str, selected_brands: list[str], selected_makers: list[str]) -> pd.DataFrame:
+    if df.empty or label_col not in df.columns:
+        return df
+
+    def keep_row(v):
+        s = str(v)
+        if "-" not in s:
+            return True
+        brand, maker = s.split("-", 1)
+        return (brand in selected_brands) and (maker in selected_makers)
+
+    return df[df[label_col].apply(keep_row)].reset_index(drop=True)
+
+
+# =========================
 # 데이터 집계 - 수주
 # =========================
 def collect_orders(wb):
@@ -601,7 +645,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
         weeks = weeks[-5:]
     days = list(daterange(day_start, day_end))
 
-    # 1) 월별 수주현황
     r = write_title(ws, r, 1, "1) 월별 수주현황")
     top = r
     ws.cell(top, 1).value = "브랜드-구분"
@@ -687,7 +730,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
     charts.append(("월별 수주 추세", chart_top, rr - chart_top))
     r = rr + 2
 
-    # 2) 최근 5주간 주간 합계
     r = write_title(ws, r, 1, "2) 최근 5주간 주간 합계")
     top = r
     ws.cell(top, 1).value = "브랜드-구분"
@@ -775,7 +817,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
     charts.append(("5주 주간 합계 추세", chart_top, rr - chart_top))
     r = rr + 2
 
-    # 3) 지난 1주일 수주 현황
     r = write_title(ws, r, 1, "3) 지난 1주일 수주 현황")
     top = r
     ws.cell(top, 1).value = "브랜드-구분"
@@ -862,7 +903,6 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
     charts = []
     r = top_row
 
-    # 4) 생산 요약
     r = write_title(ws, r, 1, "4) 생산 요약")
     top = r
     ws.cell(top, 1).value = "브랜드"
@@ -923,7 +963,6 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
     charts.append(("생산 요약 계획/실적", chart_top, rr - chart_top))
     r = rr + 2
 
-    # 5) 생산 상세
     dates = list(daterange(prod_detail_start, prod_detail_end))
     r = write_title(ws, r, 1, "5) 생산 상세")
     top = r
@@ -1236,6 +1275,15 @@ with col2:
     prod_detail_start = st.date_input("5) 생산 상세 시작일", value=date.today() - timedelta(days=6))
     prod_detail_end = st.date_input("5) 생산 상세 종료일", value=date.today())
 
+st.subheader("수주 표 필터")
+fcol1, fcol2 = st.columns(2)
+
+with fcol1:
+    selected_brands = st.multiselect("브랜드 선택", options=BRANDS, default=BRANDS)
+
+with fcol2:
+    selected_makers = st.multiselect("내외작 선택", options=MAKERS, default=MAKERS)
+
 run_btn = st.button("생산일보 생성", type="primary")
 
 if uploaded_file and run_btn:
@@ -1286,10 +1334,41 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
+        # 수주 표 필터 적용
+        df1 = filter_order_rows_by_selection(df1, "브랜드-구분", selected_brands, selected_makers)
+        df2 = filter_order_rows_by_selection(df2, "브랜드-구분", selected_brands, selected_makers)
+        df3 = filter_order_rows_by_selection(df3, "브랜드-구분", selected_brands, selected_makers)
+
+        # 수주 그래프 필터 적용
+        if "내작" not in selected_makers:
+            for col in ["내작수량", "내작금액"]:
+                if col in df_monthly_chart.columns:
+                    df_monthly_chart[col] = 0
+                if col in df_weekly_chart.columns:
+                    df_weekly_chart[col] = 0
+                if col in df_daily_chart.columns:
+                    df_daily_chart[col] = 0
+
+        if "외주" not in selected_makers:
+            for col in ["외주수량", "외주금액"]:
+                if col in df_monthly_chart.columns:
+                    df_monthly_chart[col] = 0
+                if col in df_weekly_chart.columns:
+                    df_weekly_chart[col] = 0
+                if col in df_daily_chart.columns:
+                    df_daily_chart[col] = 0
+
+        # 하단 합계 추가
+        df1 = add_total_row(df1, "브랜드-구분")
+        df2 = add_total_row(df2, "브랜드-구분")
+        df3 = add_total_row(df3, "브랜드-구분")
+        df4 = add_total_row(df4, "브랜드")
+        df5 = add_total_row(df5, "브랜드")
+
         st.success("생산일보 생성 완료")
 
         with st.expander("1) 월별 수주현황", expanded=True):
-            st.dataframe(df1, use_container_width=True)
+            st.dataframe(format_df_for_display(df1), use_container_width=True)
             show_combo_chart(
                 df_monthly_chart,
                 "월별 수주 추세",
@@ -1299,7 +1378,7 @@ if uploaded_file and run_btn:
             )
 
         with st.expander("2) 최근 5주간 주간 합계", expanded=True):
-            st.dataframe(df2, use_container_width=True)
+            st.dataframe(format_df_for_display(df2), use_container_width=True)
             show_combo_chart(
                 df_weekly_chart,
                 "최근 5주 주간 수주 추세",
@@ -1309,7 +1388,7 @@ if uploaded_file and run_btn:
             )
 
         with st.expander("3) 지난 1주일 수주 현황", expanded=True):
-            st.dataframe(df3, use_container_width=True)
+            st.dataframe(format_df_for_display(df3), use_container_width=True)
             show_combo_chart(
                 df_daily_chart,
                 "지난 1주일 수주 추세",
@@ -1319,7 +1398,7 @@ if uploaded_file and run_btn:
             )
 
         with st.expander("4) 생산 요약", expanded=True):
-            st.dataframe(df4, use_container_width=True)
+            st.dataframe(format_df_for_display(df4), use_container_width=True)
             show_combo_chart(
                 df_prod_summary_chart,
                 "생산 요약 계획 vs 실적",
@@ -1329,7 +1408,7 @@ if uploaded_file and run_btn:
             )
 
         with st.expander("5) 생산 상세", expanded=True):
-            st.dataframe(df5, use_container_width=True)
+            st.dataframe(format_df_for_display(df5), use_container_width=True)
             show_combo_chart(
                 df_prod_detail_chart,
                 "생산 상세 추세",
