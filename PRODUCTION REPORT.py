@@ -293,6 +293,15 @@ def filter_order_rows_by_selection(df: pd.DataFrame, label_col: str, selected_br
     return df[df[label_col].apply(keep_row)].reset_index(drop=True)
 
 
+def build_filtered_orders_agg(orders_agg, selected_brands: list[str], selected_makers: list[str]):
+    filtered = defaultdict(lambda: {"qty": 0.0, "amt": 0.0})
+    for (b, m, dt), vals in orders_agg.items():
+        if b in selected_brands and m in selected_makers:
+            filtered[(b, m, dt)]["qty"] += vals["qty"]
+            filtered[(b, m, dt)]["amt"] += vals["amt"]
+    return filtered
+
+
 # =========================
 # 데이터 집계 - 수주
 # =========================
@@ -1275,7 +1284,7 @@ with col2:
     prod_detail_start = st.date_input("5) 생산 상세 시작일", value=date.today() - timedelta(days=6))
     prod_detail_end = st.date_input("5) 생산 상세 종료일", value=date.today())
 
-st.subheader("수주 표 필터")
+st.subheader("수주 표/그래프 필터")
 fcol1, fcol2 = st.columns(2)
 
 with fcol1:
@@ -1304,8 +1313,11 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
+        # 필터 반영용 수주 집계 재구성
+        filtered_orders_agg = build_filtered_orders_agg(orders_agg, selected_brands, selected_makers)
+
         df1, df2, df3, df4, df5 = build_preview_data(
-            orders_agg,
+            filtered_orders_agg,
             prod_agg,
             month_start,
             month_end,
@@ -1320,7 +1332,7 @@ if uploaded_file and run_btn:
         )
 
         df_monthly_chart, df_weekly_chart, df_daily_chart, df_prod_summary_chart, df_prod_detail_chart = build_chart_data(
-            orders_agg,
+            filtered_orders_agg,
             prod_agg,
             month_start,
             month_end,
@@ -1334,31 +1346,7 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
-        # 수주 표 필터 적용
-        df1 = filter_order_rows_by_selection(df1, "브랜드-구분", selected_brands, selected_makers)
-        df2 = filter_order_rows_by_selection(df2, "브랜드-구분", selected_brands, selected_makers)
-        df3 = filter_order_rows_by_selection(df3, "브랜드-구분", selected_brands, selected_makers)
-
-        # 수주 그래프 필터 적용
-        if "내작" not in selected_makers:
-            for col in ["내작수량", "내작금액"]:
-                if col in df_monthly_chart.columns:
-                    df_monthly_chart[col] = 0
-                if col in df_weekly_chart.columns:
-                    df_weekly_chart[col] = 0
-                if col in df_daily_chart.columns:
-                    df_daily_chart[col] = 0
-
-        if "외주" not in selected_makers:
-            for col in ["외주수량", "외주금액"]:
-                if col in df_monthly_chart.columns:
-                    df_monthly_chart[col] = 0
-                if col in df_weekly_chart.columns:
-                    df_weekly_chart[col] = 0
-                if col in df_daily_chart.columns:
-                    df_daily_chart[col] = 0
-
-        # 하단 합계 추가
+        # 표 하단 합계 추가
         df1 = add_total_row(df1, "브랜드-구분")
         df2 = add_total_row(df2, "브랜드-구분")
         df3 = add_total_row(df3, "브랜드-구분")
