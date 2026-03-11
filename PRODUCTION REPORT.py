@@ -360,10 +360,6 @@ def collect_orders(wb):
 
 
 def collect_outsource_supplier_orders(wb):
-    """
-    외주 수주만 브랜드/업체/일자 기준 집계
-    agg[(brand, supplier, dt)] = {"qty": ..., "amt": ...}
-    """
     agg = defaultdict(lambda: {"qty": 0.0, "amt": 0.0})
 
     DATE_COLS = ["주문일자", "주문일", "수주일", "오더일자"]
@@ -669,20 +665,21 @@ def build_chart_data(
     return df_monthly, df_weekly, df_daily, df_prod_summary, df_prod_detail
 
 
-def build_outsource_supplier_preview(outsource_supplier_agg, start_date, end_date, selected_brands):
+def build_outsource_supplier_preview(outsource_supplier_agg, start_date, end_date, selected_brands, supplier_keyword=""):
     weeks = get_week_ranges(start_date, end_date)
 
-    rows = []
     supplier_keys = sorted(
         {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
         key=lambda x: (x[0], x[1])
     )
 
+    if supplier_keyword.strip():
+        kw = supplier_keyword.strip().lower()
+        supplier_keys = [(b, s) for (b, s) in supplier_keys if kw in s.lower()]
+
+    rows = []
     for brand, supplier in supplier_keys:
-        row = {
-            "브랜드": brand,
-            "외주업체": supplier,
-        }
+        row = {"브랜드": brand, "외주업체": supplier}
         total_qty = 0.0
         total_amt = 0.0
 
@@ -706,26 +703,36 @@ def build_outsource_supplier_preview(outsource_supplier_agg, start_date, end_dat
     return pd.DataFrame(rows)
 
 
-def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands):
-    rows = []
+def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands, supplier_keyword=""):
+    weeks = get_week_ranges(start_date, end_date)
+
     supplier_keys = sorted(
         {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
         key=lambda x: (x[0], x[1])
     )
 
-    for brand, supplier in supplier_keys:
-        qty = amt = 0.0
-        for d in daterange(start_date, end_date):
-            v = outsource_supplier_agg.get((brand, supplier, d), {"qty": 0.0, "amt": 0.0})
-            qty += v["qty"]
-            amt += v["amt"]
+    if supplier_keyword.strip():
+        kw = supplier_keyword.strip().lower()
+        supplier_keys = [(b, s) for (b, s) in supplier_keys if kw in s.lower()]
 
-        rows.append({
-            "브랜드": brand,
-            "외주업체": supplier,
-            "수량": qty,
-            "금액": amt,
-        })
+    rows = []
+    for w_s, w_e in weeks:
+        period_label = f"{w_s.strftime('%m/%d')}~{w_e.strftime('%m/%d')}"
+        for brand, supplier in supplier_keys:
+            qty = amt = 0.0
+            for d in daterange(w_s, w_e):
+                v = outsource_supplier_agg.get((brand, supplier, d), {"qty": 0.0, "amt": 0.0})
+                qty += v["qty"]
+                amt += v["amt"]
+
+            rows.append({
+                "기간": period_label,
+                "브랜드": brand,
+                "외주업체": supplier,
+                "브랜드-업체": f"{brand}-{supplier}",
+                "수량": qty,
+                "금액": amt,
+            })
 
     return pd.DataFrame(rows)
 
@@ -769,10 +776,12 @@ def show_outsource_supplier_chart(df):
         return
 
     bar = alt.Chart(df).mark_bar().encode(
-        x=alt.X("외주업체:N", title="외주업체", sort="-y"),
+        x=alt.X("기간:N", title="기간"),
         y=alt.Y("수량:Q", title="수량"),
-        color=alt.Color("브랜드:N", title="브랜드"),
+        color=alt.Color("브랜드-업체:N", title="브랜드-업체"),
+        xOffset="브랜드-업체:N",
         tooltip=[
+            "기간",
             "브랜드",
             "외주업체",
             alt.Tooltip("수량:Q", format=",.0f"),
@@ -781,11 +790,12 @@ def show_outsource_supplier_chart(df):
     )
 
     line = alt.Chart(df).mark_line(point=True).encode(
-        x=alt.X("외주업체:N", title="외주업체"),
+        x=alt.X("기간:N", title="기간"),
         y=alt.Y("금액:Q", title="금액"),
-        detail="브랜드:N",
-        color=alt.Color("브랜드:N", legend=None),
+        color=alt.Color("브랜드-업체:N", legend=None),
+        detail="브랜드-업체:N",
         tooltip=[
+            "기간",
             "브랜드",
             "외주업체",
             alt.Tooltip("수량:Q", format=",.0f"),
@@ -1443,13 +1453,16 @@ with col2:
     prod_detail_end = st.date_input("5) 생산 상세 종료일", value=date.today())
 
 st.subheader("수주 표/그래프 필터")
-fcol1, fcol2 = st.columns(2)
+fcol1, fcol2, fcol3 = st.columns(3)
 
 with fcol1:
     selected_brands = st.multiselect("브랜드 선택", options=BRANDS, default=BRANDS)
 
 with fcol2:
     selected_makers = st.multiselect("내외작 선택", options=MAKERS, default=MAKERS)
+
+with fcol3:
+    supplier_keyword = st.text_input("외주업체명 검색", value="")
 
 run_btn = st.button("생산일보 생성", type="primary")
 
@@ -1473,7 +1486,6 @@ if uploaded_file and run_btn:
 
         outsource_supplier_agg = collect_outsource_supplier_orders(wb_src)
 
-        # 수주 필터 반영 집계
         filtered_orders_agg = build_filtered_orders_agg(orders_agg, selected_brands, selected_makers)
 
         df1, df2, df3, df4, df5 = build_preview_data(
@@ -1510,7 +1522,8 @@ if uploaded_file and run_btn:
             outsource_supplier_agg,
             week_start,
             week_end,
-            selected_brands
+            selected_brands,
+            supplier_keyword,
         )
         df_outsource_supplier = add_total_row(df_outsource_supplier, "브랜드")
 
@@ -1518,10 +1531,10 @@ if uploaded_file and run_btn:
             outsource_supplier_agg,
             week_start,
             week_end,
-            selected_brands
+            selected_brands,
+            supplier_keyword,
         )
 
-        # 표 하단 합계 추가
         df1 = add_total_row(df1, "브랜드-구분")
         df2 = add_total_row(df2, "브랜드-구분")
         df3 = add_total_row(df3, "브랜드-구분")
