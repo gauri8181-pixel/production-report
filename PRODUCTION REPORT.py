@@ -433,6 +433,11 @@ def collect_outsource_supplier_orders(wb):
     return agg
 
 
+def get_outsource_supplier_list(outsource_supplier_agg, selected_brands):
+    suppliers = sorted({s for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands})
+    return suppliers
+
+
 # =========================
 # 데이터 집계 - 생산
 # =========================
@@ -665,57 +670,18 @@ def build_chart_data(
     return df_monthly, df_weekly, df_daily, df_prod_summary, df_prod_detail
 
 
-def build_outsource_supplier_preview(outsource_supplier_agg, start_date, end_date, selected_brands, supplier_keyword=""):
+def build_outsource_supplier_table(outsource_supplier_agg, start_date, end_date, selected_brands, selected_suppliers):
     weeks = get_week_ranges(start_date, end_date)
+    rows = []
 
     supplier_keys = sorted(
         {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
         key=lambda x: (x[0], x[1])
     )
 
-    if supplier_keyword.strip():
-        kw = supplier_keyword.strip().lower()
-        supplier_keys = [(b, s) for (b, s) in supplier_keys if kw in s.lower()]
+    if selected_suppliers:
+        supplier_keys = [(b, s) for (b, s) in supplier_keys if s in selected_suppliers]
 
-    rows = []
-    for brand, supplier in supplier_keys:
-        row = {"브랜드": brand, "외주업체": supplier}
-        total_qty = 0.0
-        total_amt = 0.0
-
-        for w_s, w_e in weeks:
-            label = f"{w_s.strftime('%m/%d')}~{w_e.strftime('%m/%d')}"
-            qty = amt = 0.0
-            for d in daterange(w_s, w_e):
-                v = outsource_supplier_agg.get((brand, supplier, d), {"qty": 0.0, "amt": 0.0})
-                qty += v["qty"]
-                amt += v["amt"]
-
-            row[f"{label}_수량"] = qty
-            row[f"{label}_금액"] = amt
-            total_qty += qty
-            total_amt += amt
-
-        row["합계_수량"] = total_qty
-        row["합계_금액"] = total_amt
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands, supplier_keyword=""):
-    weeks = get_week_ranges(start_date, end_date)
-
-    supplier_keys = sorted(
-        {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
-        key=lambda x: (x[0], x[1])
-    )
-
-    if supplier_keyword.strip():
-        kw = supplier_keyword.strip().lower()
-        supplier_keys = [(b, s) for (b, s) in supplier_keys if kw in s.lower()]
-
-    rows = []
     for w_s, w_e in weeks:
         period_label = f"{w_s.strftime('%m/%d')}~{w_e.strftime('%m/%d')}"
         for brand, supplier in supplier_keys:
@@ -726,15 +692,29 @@ def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_
                 amt += v["amt"]
 
             rows.append({
-                "기간": period_label,
                 "브랜드": brand,
                 "외주업체": supplier,
-                "브랜드-업체": f"{brand}-{supplier}",
+                "기간": period_label,
                 "수량": qty,
                 "금액": amt,
             })
 
     return pd.DataFrame(rows)
+
+
+def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands, selected_suppliers):
+    df = build_outsource_supplier_table(
+        outsource_supplier_agg,
+        start_date,
+        end_date,
+        selected_brands,
+        selected_suppliers,
+    ).copy()
+
+    if not df.empty:
+        df["브랜드-업체"] = df["브랜드"] + "-" + df["외주업체"]
+
+    return df
 
 
 def show_combo_chart(df, title, x_col, qty_cols, amt_cols):
@@ -1453,7 +1433,7 @@ with col2:
     prod_detail_end = st.date_input("5) 생산 상세 종료일", value=date.today())
 
 st.subheader("수주 표/그래프 필터")
-fcol1, fcol2, fcol3 = st.columns(3)
+fcol1, fcol2 = st.columns(2)
 
 with fcol1:
     selected_brands = st.multiselect("브랜드 선택", options=BRANDS, default=BRANDS)
@@ -1461,8 +1441,17 @@ with fcol1:
 with fcol2:
     selected_makers = st.multiselect("내외작 선택", options=MAKERS, default=MAKERS)
 
-with fcol3:
-    supplier_keyword = st.text_input("외주업체명 검색", value="")
+selected_suppliers = []
+run_btn = False
+
+if uploaded_file is not None:
+    try:
+        tmp_wb = load_workbook(filename=io.BytesIO(uploaded_file.getvalue()), data_only=False)
+        tmp_outsource_supplier_agg = collect_outsource_supplier_orders(tmp_wb)
+        supplier_options = get_outsource_supplier_list(tmp_outsource_supplier_agg, selected_brands)
+        selected_suppliers = st.multiselect("외주업체 선택", options=supplier_options, default=supplier_options)
+    except Exception:
+        selected_suppliers = st.multiselect("외주업체 선택", options=[], default=[])
 
 run_btn = st.button("생산일보 생성", type="primary")
 
@@ -1518,12 +1507,12 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
-        df_outsource_supplier = build_outsource_supplier_preview(
+        df_outsource_supplier = build_outsource_supplier_table(
             outsource_supplier_agg,
             week_start,
             week_end,
             selected_brands,
-            supplier_keyword,
+            selected_suppliers,
         )
         df_outsource_supplier = add_total_row(df_outsource_supplier, "브랜드")
 
@@ -1532,7 +1521,7 @@ if uploaded_file and run_btn:
             week_start,
             week_end,
             selected_brands,
-            supplier_keyword,
+            selected_suppliers,
         )
 
         df1 = add_total_row(df1, "브랜드-구분")
@@ -1611,3 +1600,4 @@ if uploaded_file and run_btn:
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
+
