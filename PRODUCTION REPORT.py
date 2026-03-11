@@ -279,20 +279,6 @@ def format_df_for_display(df: pd.DataFrame):
     return df.style.format(fmt)
 
 
-def filter_order_rows_by_selection(df: pd.DataFrame, label_col: str, selected_brands: list[str], selected_makers: list[str]) -> pd.DataFrame:
-    if df.empty or label_col not in df.columns:
-        return df
-
-    def keep_row(v):
-        s = str(v)
-        if "-" not in s:
-            return True
-        brand, maker = s.split("-", 1)
-        return (brand in selected_brands) and (maker in selected_makers)
-
-    return df[df[label_col].apply(keep_row)].reset_index(drop=True)
-
-
 def build_filtered_orders_agg(orders_agg, selected_brands: list[str], selected_makers: list[str]):
     filtered = defaultdict(lambda: {"qty": 0.0, "amt": 0.0})
     for (b, m, dt), vals in orders_agg.items():
@@ -371,6 +357,84 @@ def collect_orders(wb):
             agg_daily[(b, maker, dt)]["amt"] += amt
 
     return agg_daily
+
+
+def collect_outsource_supplier_orders(wb):
+    """
+    외주 수주만 브랜드/업체/일자 기준 집계
+    agg[(brand, supplier, dt)] = {"qty": ..., "amt": ...}
+    """
+    agg = defaultdict(lambda: {"qty": 0.0, "amt": 0.0})
+
+    DATE_COLS = ["주문일자", "주문일", "수주일", "오더일자"]
+    QTY_COLS = ["수주량", "수주수량", "주문수량", "수량"]
+    AMT_COLS = ["입고금액", "금액", "수주금액"]
+    BRAND_COLS = ["브랜드"]
+    SUP_COLS = ["공급처", "협력사", "업체", "공급업체"]
+
+    for ws_name in wb.sheetnames:
+        if "수주" not in ws_name:
+            continue
+
+        ws = wb[ws_name]
+        headers, rows = read_rows(ws)
+
+        sheet_brand = None
+        if "알로소" in ws_name:
+            sheet_brand = "알로소"
+        elif "일룸" in ws_name:
+            sheet_brand = "일룸"
+        elif "퍼시스" in ws_name:
+            sheet_brand = "퍼시스"
+
+        sheet_maker = None
+        if "내작" in ws_name:
+            sheet_maker = "내작"
+        elif "외주" in ws_name or "상품" in ws_name:
+            sheet_maker = "외주"
+
+        if not any(norm(x) in headers for x in map(norm, DATE_COLS)):
+            continue
+        if not any(norm(x) in headers for x in map(norm, QTY_COLS)):
+            continue
+        if not any(norm(x) in headers for x in map(norm, AMT_COLS)):
+            continue
+
+        for row in rows:
+            dt = try_parse_date(safe_get(row, DATE_COLS))
+            if dt is None:
+                continue
+
+            qty = to_number(safe_get(row, QTY_COLS))
+            amt = to_number(safe_get(row, AMT_COLS))
+
+            b = safe_get(row, BRAND_COLS)
+            b = (str(b).strip() if b is not None else "")
+            if b == "":
+                b = sheet_brand if sheet_brand else "기타"
+
+            supplier = safe_get(row, SUP_COLS)
+            supplier = (str(supplier).strip() if supplier is not None else "")
+
+            maker = sheet_maker
+            if maker is None:
+                if b == "퍼시스":
+                    maker = "내작" if supplier == FURSYS_INHOUSE_SUPPLIER else "외주"
+                elif b == "알로소" and ALLOSO_INHOUSE_SUPPLIER_EMPTY_OK and supplier == "":
+                    maker = "내작"
+                else:
+                    maker = "내작" if supplier == FURSYS_INHOUSE_SUPPLIER else "외주"
+
+            if maker != "외주":
+                continue
+
+            if supplier == "":
+                supplier = "미지정업체"
+
+            agg[(b, supplier, dt)]["qty"] += qty
+            agg[(b, supplier, dt)]["amt"] += amt
+
+    return agg
 
 
 # =========================
@@ -522,9 +586,6 @@ def build_chart_data(
     df_monthly = pd.DataFrame(monthly_rows)
 
     weeks = get_week_ranges(week_start, week_end)
-    if len(weeks) > 5:
-        weeks = weeks[-5:]
-
     weekly_rows = []
     for w_s, w_e in weeks:
         in_qty = out_qty = in_amt = out_amt = 0.0
@@ -608,6 +669,67 @@ def build_chart_data(
     return df_monthly, df_weekly, df_daily, df_prod_summary, df_prod_detail
 
 
+def build_outsource_supplier_preview(outsource_supplier_agg, start_date, end_date, selected_brands):
+    weeks = get_week_ranges(start_date, end_date)
+
+    rows = []
+    supplier_keys = sorted(
+        {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
+        key=lambda x: (x[0], x[1])
+    )
+
+    for brand, supplier in supplier_keys:
+        row = {
+            "브랜드": brand,
+            "외주업체": supplier,
+        }
+        total_qty = 0.0
+        total_amt = 0.0
+
+        for w_s, w_e in weeks:
+            label = f"{w_s.strftime('%m/%d')}~{w_e.strftime('%m/%d')}"
+            qty = amt = 0.0
+            for d in daterange(w_s, w_e):
+                v = outsource_supplier_agg.get((brand, supplier, d), {"qty": 0.0, "amt": 0.0})
+                qty += v["qty"]
+                amt += v["amt"]
+
+            row[f"{label}_수량"] = qty
+            row[f"{label}_금액"] = amt
+            total_qty += qty
+            total_amt += amt
+
+        row["합계_수량"] = total_qty
+        row["합계_금액"] = total_amt
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands):
+    rows = []
+    supplier_keys = sorted(
+        {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
+        key=lambda x: (x[0], x[1])
+    )
+
+    for brand, supplier in supplier_keys:
+        qty = amt = 0.0
+        for d in daterange(start_date, end_date):
+            v = outsource_supplier_agg.get((brand, supplier, d), {"qty": 0.0, "amt": 0.0})
+            qty += v["qty"]
+            amt += v["amt"]
+
+        rows.append({
+            "브랜드": brand,
+            "외주업체": supplier,
+            "수량": qty,
+            "금액": amt,
+        })
+
+    return pd.DataFrame(rows)
+
+
 def show_combo_chart(df, title, x_col, qty_cols, amt_cols):
     if df.empty:
         st.info("표시할 데이터가 없습니다.")
@@ -641,6 +763,46 @@ def show_combo_chart(df, title, x_col, qty_cols, amt_cols):
     st.altair_chart(chart, use_container_width=True)
 
 
+def show_outsource_supplier_chart(df):
+    if df.empty:
+        st.info("표시할 데이터가 없습니다.")
+        return
+
+    bar = alt.Chart(df).mark_bar().encode(
+        x=alt.X("외주업체:N", title="외주업체", sort="-y"),
+        y=alt.Y("수량:Q", title="수량"),
+        color=alt.Color("브랜드:N", title="브랜드"),
+        tooltip=[
+            "브랜드",
+            "외주업체",
+            alt.Tooltip("수량:Q", format=",.0f"),
+            alt.Tooltip("금액:Q", format=",.0f"),
+        ]
+    )
+
+    line = alt.Chart(df).mark_line(point=True).encode(
+        x=alt.X("외주업체:N", title="외주업체"),
+        y=alt.Y("금액:Q", title="금액"),
+        detail="브랜드:N",
+        color=alt.Color("브랜드:N", legend=None),
+        tooltip=[
+            "브랜드",
+            "외주업체",
+            alt.Tooltip("수량:Q", format=",.0f"),
+            alt.Tooltip("금액:Q", format=",.0f"),
+        ]
+    )
+
+    chart = alt.layer(bar, line).resolve_scale(
+        y="independent"
+    ).properties(
+        title="외주 브랜드별 / 업체별 수주 현황",
+        height=420
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 # =========================
 # 엑셀 시트 작성
 # =========================
@@ -650,8 +812,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
 
     months = get_month_keys(month_start, month_end)
     weeks = get_week_ranges(week_start, week_end)
-    if len(weeks) > 5:
-        weeks = weeks[-5:]
     days = list(daterange(day_start, day_end))
 
     r = write_title(ws, r, 1, "1) 월별 수주현황")
@@ -739,7 +899,7 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
     charts.append(("월별 수주 추세", chart_top, rr - chart_top))
     r = rr + 2
 
-    r = write_title(ws, r, 1, "2) 최근 5주간 주간 합계")
+    r = write_title(ws, r, 1, "2) 설정 기간 주차별 수주 현황")
     top = r
     ws.cell(top, 1).value = "브랜드-구분"
     c = 2
@@ -823,10 +983,10 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
         rr += 1
     apply_table_style(ws, chart_top, 1, rr - 1, 5, header_rows=1)
     format_number_cells(ws, chart_top + 1, 2, rr - 1, 5)
-    charts.append(("5주 주간 합계 추세", chart_top, rr - chart_top))
+    charts.append(("설정 기간 주차별 수주 추세", chart_top, rr - chart_top))
     r = rr + 2
 
-    r = write_title(ws, r, 1, "3) 지난 1주일 수주 현황")
+    r = write_title(ws, r, 1, "3) 설정 기간 일자별 수주 현황")
     top = r
     ws.cell(top, 1).value = "브랜드-구분"
     c = 2
@@ -902,7 +1062,7 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
         rr += 1
     apply_table_style(ws, chart_top, 1, rr - 1, 5, header_rows=1)
     format_number_cells(ws, chart_top + 1, 2, rr - 1, 5)
-    charts.append(("지난 1주일 수주 추세", chart_top, rr - chart_top))
+    charts.append(("설정 기간 일자별 수주 추세", chart_top, rr - chart_top))
     r = rr + 2
 
     return r, charts
@@ -1166,8 +1326,6 @@ def build_preview_data(
     df1 = pd.DataFrame(rows1)
 
     weeks = get_week_ranges(week_start, week_end)
-    if len(weeks) > 5:
-        weeks = weeks[-5:]
     rows2 = []
     for b in BRANDS:
         for mkr in MAKERS:
@@ -1270,11 +1428,11 @@ with col1:
     month_start = st.date_input("1) 월별 수주현황 시작월", value=date(date.today().year, max(1, date.today().month - 2), 1))
     month_end = st.date_input("1) 월별 수주현황 종료월", value=date.today())
 
-    week_start = st.date_input("2) 최근 5주간 주간합계 시작일", value=date.today() - timedelta(days=34))
-    week_end = st.date_input("2) 최근 5주간 주간합계 종료일", value=date.today())
+    week_start = st.date_input("2) 주차별 수주 시작일", value=date.today() - timedelta(days=34))
+    week_end = st.date_input("2) 주차별 수주 종료일", value=date.today())
 
-    day_start = st.date_input("3) 지난 1주일 수주 시작일", value=date.today() - timedelta(days=6))
-    day_end = st.date_input("3) 지난 1주일 수주 종료일", value=date.today())
+    day_start = st.date_input("3) 일자별 수주 시작일", value=date.today() - timedelta(days=6))
+    day_end = st.date_input("3) 일자별 수주 종료일", value=date.today())
 
 with col2:
     st.subheader("생산 기간")
@@ -1313,7 +1471,9 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
-        # 필터 반영용 수주 집계 재구성
+        outsource_supplier_agg = collect_outsource_supplier_orders(wb_src)
+
+        # 수주 필터 반영 집계
         filtered_orders_agg = build_filtered_orders_agg(orders_agg, selected_brands, selected_makers)
 
         df1, df2, df3, df4, df5 = build_preview_data(
@@ -1346,6 +1506,21 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
+        df_outsource_supplier = build_outsource_supplier_preview(
+            outsource_supplier_agg,
+            week_start,
+            week_end,
+            selected_brands
+        )
+        df_outsource_supplier = add_total_row(df_outsource_supplier, "브랜드")
+
+        df_outsource_supplier_chart = build_outsource_supplier_chart_data(
+            outsource_supplier_agg,
+            week_start,
+            week_end,
+            selected_brands
+        )
+
         # 표 하단 합계 추가
         df1 = add_total_row(df1, "브랜드-구분")
         df2 = add_total_row(df2, "브랜드-구분")
@@ -1365,27 +1540,31 @@ if uploaded_file and run_btn:
                 ["내작금액", "외주금액"],
             )
 
-        with st.expander("2) 최근 5주간 주간 합계", expanded=True):
+        with st.expander("2) 설정 기간 주차별 수주 현황", expanded=True):
             st.dataframe(format_df_for_display(df2), use_container_width=True)
             show_combo_chart(
                 df_weekly_chart,
-                "최근 5주 주간 수주 추세",
+                "설정 기간 주차별 수주 추세",
                 "기간",
                 ["내작수량", "외주수량"],
                 ["내작금액", "외주금액"],
             )
 
-        with st.expander("3) 지난 1주일 수주 현황", expanded=True):
+        with st.expander("3) 외주 브랜드별 / 업체별 수주 현황", expanded=True):
+            st.dataframe(format_df_for_display(df_outsource_supplier), use_container_width=True)
+            show_outsource_supplier_chart(df_outsource_supplier_chart)
+
+        with st.expander("4) 설정 기간 일자별 수주 현황", expanded=True):
             st.dataframe(format_df_for_display(df3), use_container_width=True)
             show_combo_chart(
                 df_daily_chart,
-                "지난 1주일 수주 추세",
+                "설정 기간 일자별 수주 추세",
                 "기간",
                 ["내작수량", "외주수량"],
                 ["내작금액", "외주금액"],
             )
 
-        with st.expander("4) 생산 요약", expanded=True):
+        with st.expander("5) 생산 요약", expanded=True):
             st.dataframe(format_df_for_display(df4), use_container_width=True)
             show_combo_chart(
                 df_prod_summary_chart,
@@ -1395,7 +1574,7 @@ if uploaded_file and run_btn:
                 ["계획금액", "실적금액"],
             )
 
-        with st.expander("5) 생산 상세", expanded=True):
+        with st.expander("6) 생산 상세", expanded=True):
             st.dataframe(format_df_for_display(df5), use_container_width=True)
             show_combo_chart(
                 df_prod_detail_chart,
