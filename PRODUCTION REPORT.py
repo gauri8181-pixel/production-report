@@ -16,9 +16,6 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
 
 
-# =========================
-# 기본 설정
-# =========================
 EXCLUDE_PROD_LINES = {
     "(소파) 고객만족",
     "(소파) 재단",
@@ -40,10 +37,6 @@ CHART_ROW_GAP = 19
 CHART_COL_LEFT = "A"
 CHART_COL_RIGHT = "J"
 
-
-# =========================
-# 스타일
-# =========================
 FONT_9 = Font(name="맑은 고딕", size=9)
 BOLD_9 = Font(name="맑은 고딕", size=9, bold=True)
 TITLE_11 = Font(name="맑은 고딕", size=11, bold=True)
@@ -58,9 +51,6 @@ FILL_HEADER = PatternFill("solid", fgColor="D9EAF7")
 FILL_TOTAL = PatternFill("solid", fgColor="FFF2CC")
 
 
-# =========================
-# 공통 유틸
-# =========================
 def norm(s) -> str:
     if s is None:
         return ""
@@ -151,6 +141,10 @@ def get_week_ranges(start_date: date, end_date: date):
         weeks.append((cur, cur + timedelta(days=6)))
         cur += timedelta(days=7)
     return weeks
+
+
+def get_week_labels(start_date: date, end_date: date):
+    return [f"{ws.strftime('%m/%d')}~{we.strftime('%m/%d')}" for ws, we in get_week_ranges(start_date, end_date)]
 
 
 def autosize_columns(ws, min_w=8, max_w=20):
@@ -249,9 +243,6 @@ def write_title(ws, row, col, text):
     return row + 1
 
 
-# =========================
-# 웹 표시용 보조 함수
-# =========================
 def add_total_row(df: pd.DataFrame, label_col: str, label_name: str = "합계") -> pd.DataFrame:
     if df.empty:
         return df
@@ -288,9 +279,6 @@ def build_filtered_orders_agg(orders_agg, selected_brands: list[str], selected_m
     return filtered
 
 
-# =========================
-# 데이터 집계 - 수주
-# =========================
 def collect_orders(wb):
     agg_daily = defaultdict(lambda: {"qty": 0.0, "amt": 0.0})
 
@@ -434,13 +422,9 @@ def collect_outsource_supplier_orders(wb):
 
 
 def get_outsource_supplier_list(outsource_supplier_agg, selected_brands):
-    suppliers = sorted({s for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands})
-    return suppliers
+    return sorted({s for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands})
 
 
-# =========================
-# 데이터 집계 - 생산
-# =========================
 def collect_production_plan_actual(wb):
     agg = defaultdict(lambda: {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
 
@@ -498,9 +482,6 @@ def collect_production_plan_actual(wb):
     return agg
 
 
-# =========================
-# 엑셀 차트
-# =========================
 def make_excel_style_combo_chart(ws, title, x_title, y_left, y_right, table_top_row, table_left_col, n_rows):
     min_row = table_top_row
     max_row = table_top_row + n_rows - 1
@@ -546,9 +527,6 @@ def make_excel_style_combo_chart(ws, title, x_title, y_left, y_right, table_top_
     return bar
 
 
-# =========================
-# 웹 그래프
-# =========================
 def build_chart_data(
     orders_agg,
     prod_agg,
@@ -670,7 +648,7 @@ def build_chart_data(
     return df_monthly, df_weekly, df_daily, df_prod_summary, df_prod_detail
 
 
-def build_outsource_supplier_table(outsource_supplier_agg, start_date, end_date, selected_brands, selected_suppliers):
+def build_outsource_supplier_table(outsource_supplier_agg, start_date, end_date, selected_brands, selected_suppliers, selected_periods):
     weeks = get_week_ranges(start_date, end_date)
     rows = []
 
@@ -682,8 +660,13 @@ def build_outsource_supplier_table(outsource_supplier_agg, start_date, end_date,
     if selected_suppliers:
         supplier_keys = [(b, s) for (b, s) in supplier_keys if s in selected_suppliers]
 
+    period_filter = set(selected_periods) if selected_periods else None
+
     for w_s, w_e in weeks:
         period_label = f"{w_s.strftime('%m/%d')}~{w_e.strftime('%m/%d')}"
+        if period_filter and period_label not in period_filter:
+            continue
+
         for brand, supplier in supplier_keys:
             qty = amt = 0.0
             for d in daterange(w_s, w_e):
@@ -702,13 +685,14 @@ def build_outsource_supplier_table(outsource_supplier_agg, start_date, end_date,
     return pd.DataFrame(rows)
 
 
-def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands, selected_suppliers):
+def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_date, selected_brands, selected_suppliers, selected_periods):
     df = build_outsource_supplier_table(
         outsource_supplier_agg,
         start_date,
         end_date,
         selected_brands,
         selected_suppliers,
+        selected_periods,
     ).copy()
 
     if not df.empty:
@@ -740,13 +724,7 @@ def show_combo_chart(df, title, x_col, qty_cols, amt_cols):
         tooltip=[x_col, "구분", alt.Tooltip("값:Q", format=",.0f")]
     )
 
-    chart = alt.layer(bar, line).resolve_scale(
-        y="independent"
-    ).properties(
-        title=title,
-        height=380
-    )
-
+    chart = alt.layer(bar, line).resolve_scale(y="independent").properties(title=title, height=380)
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -766,7 +744,7 @@ def show_outsource_supplier_chart(df):
             "외주업체",
             alt.Tooltip("수량:Q", format=",.0f"),
             alt.Tooltip("금액:Q", format=",.0f"),
-        ]
+        ],
     )
 
     line = alt.Chart(df).mark_line(point=True).encode(
@@ -780,22 +758,16 @@ def show_outsource_supplier_chart(df):
             "외주업체",
             alt.Tooltip("수량:Q", format=",.0f"),
             alt.Tooltip("금액:Q", format=",.0f"),
-        ]
+        ],
     )
 
-    chart = alt.layer(bar, line).resolve_scale(
-        y="independent"
-    ).properties(
+    chart = alt.layer(bar, line).resolve_scale(y="independent").properties(
         title="외주 브랜드별 / 업체별 수주 현황",
-        height=420
+        height=420,
     )
-
     st.altair_chart(chart, use_container_width=True)
 
 
-# =========================
-# 엑셀 시트 작성
-# =========================
 def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_start, week_end, day_start, day_end):
     charts = []
     r = top_row
@@ -1277,9 +1249,6 @@ def build_excel_report(
     return wb, orders_agg, prod_agg
 
 
-# =========================
-# 웹 미리보기 데이터
-# =========================
 def build_preview_data(
     orders_agg,
     prod_agg,
@@ -1399,9 +1368,6 @@ def build_preview_data(
     return df1, df2, df3, df4, df5
 
 
-# =========================
-# Streamlit UI
-# =========================
 st.set_page_config(page_title="생산일보 생성기", layout="wide")
 st.title("생산일보 생성기")
 st.markdown("엑셀 업로드 → 기간 설정 → 생산일보 생성 → 웹 표/그래프 확인 → 엑셀 다운로드")
@@ -1442,16 +1408,23 @@ with fcol2:
     selected_makers = st.multiselect("내외작 선택", options=MAKERS, default=MAKERS)
 
 selected_suppliers = []
-run_btn = False
+selected_periods = []
 
 if uploaded_file is not None:
     try:
         tmp_wb = load_workbook(filename=io.BytesIO(uploaded_file.getvalue()), data_only=False)
         tmp_outsource_supplier_agg = collect_outsource_supplier_orders(tmp_wb)
         supplier_options = get_outsource_supplier_list(tmp_outsource_supplier_agg, selected_brands)
-        selected_suppliers = st.multiselect("외주업체 선택", options=supplier_options, default=supplier_options)
+        period_options = get_week_labels(week_start, week_end)
+
+        st.subheader("외주업체 상세 필터")
+        scol1, scol2 = st.columns(2)
+        with scol1:
+            selected_suppliers = st.multiselect("외주업체 선택", options=supplier_options, default=supplier_options)
+        with scol2:
+            selected_periods = st.multiselect("기간 선택", options=period_options, default=period_options)
     except Exception:
-        selected_suppliers = st.multiselect("외주업체 선택", options=[], default=[])
+        pass
 
 run_btn = st.button("생산일보 생성", type="primary")
 
@@ -1474,7 +1447,6 @@ if uploaded_file and run_btn:
         )
 
         outsource_supplier_agg = collect_outsource_supplier_orders(wb_src)
-
         filtered_orders_agg = build_filtered_orders_agg(orders_agg, selected_brands, selected_makers)
 
         df1, df2, df3, df4, df5 = build_preview_data(
@@ -1513,6 +1485,7 @@ if uploaded_file and run_btn:
             week_end,
             selected_brands,
             selected_suppliers,
+            selected_periods,
         )
         df_outsource_supplier = add_total_row(df_outsource_supplier, "브랜드")
 
@@ -1522,6 +1495,7 @@ if uploaded_file and run_btn:
             week_end,
             selected_brands,
             selected_suppliers,
+            selected_periods,
         )
 
         df1 = add_total_row(df1, "브랜드-구분")
