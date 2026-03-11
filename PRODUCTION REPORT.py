@@ -144,10 +144,6 @@ def get_week_ranges(start_date: date, end_date: date):
     return weeks
 
 
-def get_week_labels(start_date: date, end_date: date):
-    return [f"{ws.strftime('%m/%d')}~{we.strftime('%m/%d')}" for ws, we in get_week_ranges(start_date, end_date)]
-
-
 def autosize_columns(ws, min_w=8, max_w=20):
     for col in range(1, ws.max_column + 1):
         mx = 0
@@ -269,6 +265,26 @@ def format_df_for_display(df: pd.DataFrame):
     num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     fmt = {c: "{:,.0f}" for c in num_cols}
     return df.style.format(fmt)
+
+
+def format_outsource_cross_table(df: pd.DataFrame):
+    if df.empty:
+        return df.style
+
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    fmt = {c: "{:,.0f}" for c in num_cols}
+
+    def row_style(row):
+        brand = str(row.get("브랜드", ""))
+        supplier = str(row.get("외주업체", ""))
+
+        if brand == "전체" and supplier == "합계":
+            return ["background-color: #FFF2CC; font-weight: bold;"] * len(row)
+        if supplier == "소계":
+            return ["background-color: #E2F0D9; font-weight: bold;"] * len(row)
+        return [""] * len(row)
+
+    return df.style.format(fmt).apply(row_style, axis=1)
 
 
 def build_filtered_orders_agg(orders_agg, selected_brands: list[str], selected_makers: list[str]):
@@ -423,7 +439,17 @@ def collect_outsource_supplier_orders(wb):
 
 
 def get_outsource_supplier_list(outsource_supplier_agg, selected_brands):
-    return sorted({s for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands})
+    supplier_set = []
+    seen = set()
+
+    for brand in selected_brands:
+        brand_suppliers = sorted({s for (b, s, _dt) in outsource_supplier_agg.keys() if b == brand})
+        for s in brand_suppliers:
+            if s not in seen:
+                seen.add(s)
+                supplier_set.append(s)
+
+    return supplier_set
 
 
 def collect_production_plan_actual(wb):
@@ -655,7 +681,7 @@ def build_outsource_supplier_cross_table(outsource_supplier_agg, start_date, end
 
     supplier_keys = sorted(
         {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
-        key=lambda x: (x[0], x[1])
+        key=lambda x: (selected_brands.index(x[0]) if x[0] in selected_brands else 999, x[1])
     )
 
     if selected_suppliers:
@@ -713,18 +739,23 @@ def build_outsource_supplier_cross_table(outsource_supplier_agg, start_date, end
         return df
 
     total_row = {"브랜드": "전체", "외주업체": "합계"}
+    detail_mask = df["외주업체"] != "소계"
+
     for col in df.columns:
         if col in ["브랜드", "외주업체"]:
             continue
         if pd.api.types.is_numeric_dtype(df[col]):
-            # 브랜드 소계 행 제외하고 업체 상세 + 소계까지 합치면 중복되므로
-            # 업체 상세만 대상으로 전체 합계 산출
-            mask = df["외주업체"] != "소계"
-            total_row[col] = df.loc[mask, col].sum()
+            total_row[col] = df.loc[detail_mask, col].sum()
         else:
             total_row[col] = ""
 
     df = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+
+    fixed_cols = ["브랜드", "외주업체"]
+    period_cols = [c for c in df.columns if c not in fixed_cols and not c.startswith("합계_")]
+    total_cols = [c for c in df.columns if c.startswith("합계_")]
+    df = df[fixed_cols + period_cols + total_cols]
+
     return df
 
 
@@ -793,6 +824,9 @@ def show_outsource_supplier_chart(df):
         st.info("표시할 데이터가 없습니다.")
         return
 
+    series_count = df["브랜드-업체"].nunique() if "브랜드-업체" in df.columns else 1
+    dynamic_height = max(420, min(720, 320 + series_count * 18))
+
     bar = alt.Chart(df).mark_bar().encode(
         x=alt.X("기간:N", title="기간"),
         y=alt.Y("수량:Q", title="수량"),
@@ -823,7 +857,7 @@ def show_outsource_supplier_chart(df):
 
     chart = alt.layer(bar, line).resolve_scale(y="independent").properties(
         title="외주 브랜드별 / 업체별 수주 현황",
-        height=420,
+        height=dynamic_height,
     )
     st.altair_chart(chart, use_container_width=True)
 
@@ -1578,7 +1612,7 @@ if uploaded_file and run_btn:
             )
 
         with st.expander("3) 외주 브랜드별 / 업체별 수주 현황", expanded=True):
-            st.dataframe(format_df_for_display(df_outsource_supplier), use_container_width=True)
+            st.dataframe(format_outsource_cross_table(df_outsource_supplier), use_container_width=True, height=520)
             show_outsource_supplier_chart(df_outsource_supplier_chart)
 
         with st.expander("4) 설정 기간 일자별 수주 현황", expanded=True):
@@ -1625,4 +1659,3 @@ if uploaded_file and run_btn:
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
-
