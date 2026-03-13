@@ -16,6 +16,9 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
 
 
+# =========================
+# 기본 설정
+# =========================
 EXCLUDE_PROD_LINES = {
     "(소파) 고객만족",
     "(소파) 재단",
@@ -52,6 +55,9 @@ FILL_TOTAL = PatternFill("solid", fgColor="FFF2CC")
 FILL_SUBTOTAL = PatternFill("solid", fgColor="E2F0D9")
 
 
+# =========================
+# 공통 유틸
+# =========================
 def norm(s) -> str:
     if s is None:
         return ""
@@ -240,6 +246,9 @@ def write_title(ws, row, col, text):
     return row + 1
 
 
+# =========================
+# 표시용 스타일
+# =========================
 def add_total_row(df: pd.DataFrame, label_col: str, label_name: str = "합계") -> pd.DataFrame:
     if df.empty:
         return df
@@ -287,6 +296,9 @@ def format_outsource_cross_table(df: pd.DataFrame):
     return df.style.format(fmt).apply(row_style, axis=1)
 
 
+# =========================
+# 데이터 수집
+# =========================
 def build_filtered_orders_agg(orders_agg, selected_brands: list[str], selected_makers: list[str]):
     filtered = defaultdict(lambda: {"qty": 0.0, "amt": 0.0})
     for (b, m, dt), vals in orders_agg.items():
@@ -509,6 +521,9 @@ def collect_production_plan_actual(wb):
     return agg
 
 
+# =========================
+# 엑셀 차트
+# =========================
 def make_excel_style_combo_chart(ws, title, x_title, y_left, y_right, table_top_row, table_left_col, n_rows):
     min_row = table_top_row
     max_row = table_top_row + n_rows - 1
@@ -554,6 +569,9 @@ def make_excel_style_combo_chart(ws, title, x_title, y_left, y_right, table_top_
     return bar
 
 
+# =========================
+# 웹 그래프 데이터
+# =========================
 def build_chart_data(
     orders_agg,
     prod_agg,
@@ -634,18 +652,21 @@ def build_chart_data(
         })
     df_daily = pd.DataFrame(daily_rows)
 
+    # 생산 요약: 기간 전체 합계가 아니라 주차별 요약
     prod_summary_rows = []
-    for b in BRANDS:
+    prod_weeks = get_week_ranges(prod_summary_start, prod_summary_end)
+    for ws, we in prod_weeks:
         plan_q = plan_a = act_q = act_a = 0.0
-        for d in daterange(prod_summary_start, prod_summary_end):
-            v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
-            plan_q += v["plan_qty"]
-            plan_a += v["plan_amt"]
-            act_q += v["act_qty"]
-            act_a += v["act_amt"]
+        for d in daterange(ws, we):
+            for b in BRANDS:
+                v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
+                plan_q += v["plan_qty"]
+                plan_a += v["plan_amt"]
+                act_q += v["act_qty"]
+                act_a += v["act_amt"]
 
         prod_summary_rows.append({
-            "브랜드": b,
+            "기간": f"{ws.strftime('%m/%d')}~{we.strftime('%m/%d')}",
             "계획수량": plan_q,
             "실적수량": act_q,
             "계획금액": plan_a,
@@ -681,7 +702,7 @@ def build_outsource_supplier_cross_table(outsource_supplier_agg, start_date, end
 
     supplier_keys = sorted(
         {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
-        key=lambda x: (selected_brands.index(x[0]) if x[0] in selected_brands else 999, x[1])
+        key=lambda x: (selected_brands.index(x[0]) if x[0] in selected_brands else 999, x[1]),
     )
 
     if selected_suppliers:
@@ -765,7 +786,7 @@ def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_
 
     supplier_keys = sorted(
         {(b, s) for (b, s, _dt) in outsource_supplier_agg.keys() if b in selected_brands},
-        key=lambda x: (x[0], x[1])
+        key=lambda x: (x[0], x[1]),
     )
 
     if selected_suppliers:
@@ -792,6 +813,9 @@ def build_outsource_supplier_chart_data(outsource_supplier_agg, start_date, end_
     return pd.DataFrame(rows)
 
 
+# =========================
+# 웹 그래프
+# =========================
 def show_combo_chart(df, title, x_col, qty_cols, amt_cols):
     if df.empty:
         st.info("표시할 데이터가 없습니다.")
@@ -805,17 +829,20 @@ def show_combo_chart(df, title, x_col, qty_cols, amt_cols):
         y=alt.Y("값:Q", title="수량"),
         color=alt.Color("구분:N", title="수량 구분"),
         xOffset="구분:N",
-        tooltip=[x_col, "구분", alt.Tooltip("값:Q", format=",.0f")]
+        tooltip=[x_col, "구분", alt.Tooltip("값:Q", format=",.0f")],
     )
 
     line = alt.Chart(amt_long).mark_line(point=True).encode(
         x=alt.X(f"{x_col}:N", title=x_col),
         y=alt.Y("값:Q", title="금액"),
         color=alt.Color("구분:N", title="금액 구분"),
-        tooltip=[x_col, "구분", alt.Tooltip("값:Q", format=",.0f")]
+        tooltip=[x_col, "구분", alt.Tooltip("값:Q", format=",.0f")],
     )
 
-    chart = alt.layer(bar, line).resolve_scale(y="independent").properties(title=title, height=380)
+    chart = alt.layer(bar, line).resolve_scale(y="independent").properties(
+        title=title,
+        height=380,
+    )
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -862,6 +889,9 @@ def show_outsource_supplier_chart(df):
     st.altair_chart(chart, use_container_width=True)
 
 
+# =========================
+# 엑셀 시트
+# =========================
 def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_start, week_end, day_start, day_end):
     charts = []
     r = top_row
@@ -882,7 +912,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
     ws.merge_cells(start_row=top, start_column=c, end_row=top, end_column=c + 1)
 
     top2 = top + 1
-    ws.cell(top2, 1).value = ""
     c = 2
     for _ in months:
         ws.cell(top2, c).value = "수량"
@@ -968,7 +997,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
     ws.merge_cells(start_row=top, start_column=c, end_row=top, end_column=c + 1)
 
     top2 = top + 1
-    ws.cell(top2, 1).value = ""
     c = 2
     for _ in weeks:
         ws.cell(top2, c).value = "수량"
@@ -1054,7 +1082,6 @@ def write_orders_section(ws, top_row, orders_agg, month_start, month_end, week_s
     ws.merge_cells(start_row=top, start_column=c, end_row=top, end_column=c + 1)
 
     top2 = top + 1
-    ws.cell(top2, 1).value = ""
     c = 2
     for _ in days:
         ws.cell(top2, c).value = "수량"
@@ -1128,24 +1155,29 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
     charts = []
     r = top_row
 
-    r = write_title(ws, r, 1, "4) 생산 요약")
+    # 생산 요약: 주차별 요약으로 변경
+    weeks = get_week_ranges(prod_summary_start, prod_summary_end)
+
+    r = write_title(ws, r, 1, "4) 생산 요약 (주차별)")
     top = r
-    ws.cell(top, 1).value = "브랜드"
+    ws.cell(top, 1).value = "기간"
     ws.cell(top, 2).value = "계획수량"
     ws.cell(top, 3).value = "계획금액"
     ws.cell(top, 4).value = "실적수량"
     ws.cell(top, 5).value = "실적금액"
 
     rr = top + 1
-    for b in BRANDS:
+    for ws_d, we_d in weeks:
         plan_q = plan_a = act_q = act_a = 0.0
-        for d in daterange(prod_summary_start, prod_summary_end):
-            v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
-            plan_q += v["plan_qty"]
-            plan_a += v["plan_amt"]
-            act_q += v["act_qty"]
-            act_a += v["act_amt"]
-        ws.cell(rr, 1).value = b
+        for d in daterange(ws_d, we_d):
+            for b in BRANDS:
+                v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
+                plan_q += v["plan_qty"]
+                plan_a += v["plan_amt"]
+                act_q += v["act_qty"]
+                act_a += v["act_amt"]
+
+        ws.cell(rr, 1).value = f"{ws_d.strftime('%m/%d')}~{we_d.strftime('%m/%d')}"
         ws.cell(rr, 2).value = plan_q
         ws.cell(rr, 3).value = plan_a
         ws.cell(rr, 4).value = act_q
@@ -1163,29 +1195,33 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
     r = rr + 2
 
     chart_top = r
-    ws.cell(chart_top, 1).value = "브랜드"
+    ws.cell(chart_top, 1).value = "기간"
     ws.cell(chart_top, 2).value = "계획수량"
     ws.cell(chart_top, 3).value = "실적수량"
     ws.cell(chart_top, 4).value = "계획금액"
     ws.cell(chart_top, 5).value = "실적금액"
+
     rr = chart_top + 1
-    for b in BRANDS:
+    for ws_d, we_d in weeks:
         plan_q = plan_a = act_q = act_a = 0.0
-        for d in daterange(prod_summary_start, prod_summary_end):
-            v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
-            plan_q += v["plan_qty"]
-            plan_a += v["plan_amt"]
-            act_q += v["act_qty"]
-            act_a += v["act_amt"]
-        ws.cell(rr, 1).value = b
+        for d in daterange(ws_d, we_d):
+            for b in BRANDS:
+                v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
+                plan_q += v["plan_qty"]
+                plan_a += v["plan_amt"]
+                act_q += v["act_qty"]
+                act_a += v["act_amt"]
+
+        ws.cell(rr, 1).value = f"{ws_d.strftime('%m/%d')}~{we_d.strftime('%m/%d')}"
         ws.cell(rr, 2).value = plan_q
         ws.cell(rr, 3).value = act_q
         ws.cell(rr, 4).value = plan_a
         ws.cell(rr, 5).value = act_a
         rr += 1
+
     apply_table_style(ws, chart_top, 1, rr - 1, 5, header_rows=1)
     format_number_cells(ws, chart_top + 1, 2, rr - 1, 5)
-    charts.append(("생산 요약 계획/실적", chart_top, rr - chart_top))
+    charts.append(("생산 요약 주차별 추세", chart_top, rr - chart_top))
     r = rr + 2
 
     dates = list(daterange(prod_detail_start, prod_detail_end))
@@ -1201,7 +1237,6 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
     ws.merge_cells(start_row=top, start_column=c, end_row=top, end_column=c + 3)
 
     top2 = top + 1
-    ws.cell(top2, 1).value = ""
     c = 2
     for _ in dates:
         ws.cell(top2, c + 0).value = "계획수량"
@@ -1255,7 +1290,9 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
     ws.cell(chart_top, 3).value = "실적수량"
     ws.cell(chart_top, 4).value = "계획금액"
     ws.cell(chart_top, 5).value = "실적금액"
+
     rr = chart_top + 1
+    # 실적수량이 0인 날짜는 그래프 제외
     for d in dates:
         plan_q = plan_a = act_q = act_a = 0.0
         for b in BRANDS:
@@ -1264,15 +1301,21 @@ def write_production_section(ws, top_row, prod_agg, prod_summary_start, prod_sum
             plan_a += v["plan_amt"]
             act_q += v["act_qty"]
             act_a += v["act_amt"]
+
+        if act_q <= 0:
+            continue
+
         ws.cell(rr, 1).value = d.strftime("%m/%d")
         ws.cell(rr, 2).value = plan_q
         ws.cell(rr, 3).value = act_q
         ws.cell(rr, 4).value = plan_a
         ws.cell(rr, 5).value = act_a
         rr += 1
-    apply_table_style(ws, chart_top, 1, rr - 1, 5, header_rows=1)
-    format_number_cells(ws, chart_top + 1, 2, rr - 1, 5)
-    charts.append(("생산 상세 추세", chart_top, rr - chart_top))
+
+    if rr > chart_top + 1:
+        apply_table_style(ws, chart_top, 1, rr - 1, 5, header_rows=1)
+        format_number_cells(ws, chart_top + 1, 2, rr - 1, 5)
+        charts.append(("생산 상세 추세", chart_top, rr - chart_top))
     r = rr + 2
 
     return r, charts
@@ -1343,6 +1386,9 @@ def build_excel_report(
     return wb, orders_agg, prod_agg
 
 
+# =========================
+# 웹 미리보기 데이터
+# =========================
 def build_preview_data(
     orders_agg,
     prod_agg,
@@ -1418,17 +1464,19 @@ def build_preview_data(
             rows3.append(row)
     df3 = pd.DataFrame(rows3)
 
+    # 생산 요약: 주차별
     rows4 = []
-    for b in BRANDS:
+    for ws, we in get_week_ranges(prod_summary_start, prod_summary_end):
         plan_q = plan_a = act_q = act_a = 0.0
-        for d in daterange(prod_summary_start, prod_summary_end):
-            v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
-            plan_q += v["plan_qty"]
-            plan_a += v["plan_amt"]
-            act_q += v["act_qty"]
-            act_a += v["act_amt"]
+        for d in daterange(ws, we):
+            for b in BRANDS:
+                v = prod_agg.get((b, d), {"plan_qty": 0.0, "plan_amt": 0.0, "act_qty": 0.0, "act_amt": 0.0})
+                plan_q += v["plan_qty"]
+                plan_a += v["plan_amt"]
+                act_q += v["act_qty"]
+                act_a += v["act_amt"]
         rows4.append({
-            "브랜드": b,
+            "기간": f"{ws.strftime('%m/%d')}~{we.strftime('%m/%d')}",
             "계획수량": plan_q,
             "계획금액": plan_a,
             "실적수량": act_q,
@@ -1462,38 +1510,40 @@ def build_preview_data(
     return df1, df2, df3, df4, df5
 
 
+# =========================
+# Streamlit UI
+# =========================
 st.set_page_config(page_title="생산일보 생성기", layout="wide")
 st.title("생산일보 생성기")
-st.markdown("엑셀 업로드 → 기간 설정 → 생산일보 생성 → 웹 표/그래프 확인 → 엑셀 다운로드")
+st.markdown("엑셀 업로드 → 기간 설정 → 필터 선택 → 생산일보 생성 → 웹 표/그래프 확인 → 엑셀 다운로드")
 
 uploaded_file = st.file_uploader("생산일보 사전 자료.xlsx 업로드", type=["xlsx"])
 
 if uploaded_file is not None:
     st.info(f"업로드 파일: {uploaded_file.name}")
 
+st.subheader("기간 설정")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("수주 기간")
-    month_start = st.date_input("1) 월별 수주현황 시작월", value=date(date.today().year, max(1, date.today().month - 2), 1))
-    month_end = st.date_input("1) 월별 수주현황 종료월", value=date.today())
+    month_start = st.date_input("월별 수주 시작월", value=date(date.today().year, max(1, date.today().month - 2), 1))
+    month_end = st.date_input("월별 수주 종료월", value=date.today())
 
-    week_start = st.date_input("2) 주차별 수주 시작일", value=date.today() - timedelta(days=34))
-    week_end = st.date_input("2) 주차별 수주 종료일", value=date.today())
+    week_start = st.date_input("주차별 수주 시작일", value=date.today() - timedelta(days=34))
+    week_end = st.date_input("주차별 수주 종료일", value=date.today())
 
-    day_start = st.date_input("3) 일자별 수주 시작일", value=date.today() - timedelta(days=6))
-    day_end = st.date_input("3) 일자별 수주 종료일", value=date.today())
+    day_start = st.date_input("일자별 수주 시작일", value=date.today() - timedelta(days=6))
+    day_end = st.date_input("일자별 수주 종료일", value=date.today())
 
 with col2:
-    st.subheader("생산 기간")
-    prod_summary_start = st.date_input("4) 생산 요약 시작일", value=date.today() - timedelta(days=7))
-    prod_summary_end = st.date_input("4) 생산 요약 종료일", value=date.today())
+    prod_summary_start = st.date_input("생산 요약 시작일", value=date.today() - timedelta(days=21))
+    prod_summary_end = st.date_input("생산 요약 종료일", value=date.today())
 
-    prod_detail_start = st.date_input("5) 생산 상세 시작일", value=date.today() - timedelta(days=6))
-    prod_detail_end = st.date_input("5) 생산 상세 종료일", value=date.today())
+    prod_detail_start = st.date_input("생산 상세 시작일", value=date.today() - timedelta(days=14))
+    prod_detail_end = st.date_input("생산 상세 종료일", value=date.today())
 
-st.subheader("수주 표/그래프 필터")
-fcol1, fcol2 = st.columns(2)
+st.subheader("필터 설정")
+fcol1, fcol2, fcol3 = st.columns(3)
 
 with fcol1:
     selected_brands = st.multiselect("브랜드 선택", options=BRANDS, default=BRANDS)
@@ -1502,17 +1552,17 @@ with fcol2:
     selected_makers = st.multiselect("내외작 선택", options=MAKERS, default=MAKERS)
 
 selected_suppliers = []
-
-if uploaded_file is not None:
-    try:
-        tmp_wb = load_workbook(filename=io.BytesIO(uploaded_file.getvalue()), data_only=False)
-        tmp_outsource_supplier_agg = collect_outsource_supplier_orders(tmp_wb)
-        supplier_options = get_outsource_supplier_list(tmp_outsource_supplier_agg, selected_brands)
-
-        st.subheader("외주업체 상세 필터")
-        selected_suppliers = st.multiselect("외주업체 선택", options=supplier_options, default=supplier_options)
-    except Exception:
-        pass
+with fcol3:
+    if uploaded_file is not None:
+        try:
+            tmp_wb = load_workbook(filename=io.BytesIO(uploaded_file.getvalue()), data_only=False)
+            tmp_outsource_supplier_agg = collect_outsource_supplier_orders(tmp_wb)
+            supplier_options = get_outsource_supplier_list(tmp_outsource_supplier_agg, selected_brands)
+            selected_suppliers = st.multiselect("외주업체 선택", options=supplier_options, default=supplier_options)
+        except Exception:
+            selected_suppliers = st.multiselect("외주업체 선택", options=[], default=[])
+    else:
+        st.multiselect("외주업체 선택", options=[], default=[])
 
 run_btn = st.button("생산일보 생성", type="primary")
 
@@ -1567,6 +1617,9 @@ if uploaded_file and run_btn:
             prod_detail_end,
         )
 
+        # 생산 상세 그래프: 실적 없는 날짜 제외
+        df_prod_detail_chart = df_prod_detail_chart[df_prod_detail_chart["실적수량"] > 0].reset_index(drop=True)
+
         df_outsource_supplier = build_outsource_supplier_cross_table(
             outsource_supplier_agg,
             week_start,
@@ -1586,10 +1639,24 @@ if uploaded_file and run_btn:
         df1 = add_total_row(df1, "브랜드-구분")
         df2 = add_total_row(df2, "브랜드-구분")
         df3 = add_total_row(df3, "브랜드-구분")
-        df4 = add_total_row(df4, "브랜드")
+        df4 = add_total_row(df4, "기간")
         df5 = add_total_row(df5, "브랜드")
 
+        output = io.BytesIO()
+        wb_result.save(output)
+        output.seek(0)
+        filename = f"생산일보_{date.today().strftime('%Y%m%d')}.xlsx"
+
+        st.download_button(
+            label="엑셀 다운로드",
+            data=output,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
         st.success("생산일보 생성 완료")
+
+        st.header("수주 현황")
 
         with st.expander("1) 월별 수주현황", expanded=True):
             st.dataframe(format_df_for_display(df1), use_container_width=True)
@@ -1625,37 +1692,30 @@ if uploaded_file and run_btn:
                 ["내작금액", "외주금액"],
             )
 
-        with st.expander("5) 생산 요약", expanded=True):
+        st.header("생산 현황")
+
+        with st.expander("5) 생산 요약 (주차별)", expanded=True):
             st.dataframe(format_df_for_display(df4), use_container_width=True)
             show_combo_chart(
                 df_prod_summary_chart,
-                "생산 요약 계획 vs 실적",
-                "브랜드",
+                "생산 요약 주차별 추세",
+                "기간",
                 ["계획수량", "실적수량"],
                 ["계획금액", "실적금액"],
             )
 
         with st.expander("6) 생산 상세", expanded=True):
             st.dataframe(format_df_for_display(df5), use_container_width=True)
-            show_combo_chart(
-                df_prod_detail_chart,
-                "생산 상세 추세",
-                "기간",
-                ["계획수량", "실적수량"],
-                ["계획금액", "실적금액"],
-            )
-
-        output = io.BytesIO()
-        wb_result.save(output)
-        output.seek(0)
-
-        filename = f"생산일보_{date.today().strftime('%Y%m%d')}.xlsx"
-        st.download_button(
-            label="엑셀 다운로드",
-            data=output,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+            if not df_prod_detail_chart.empty:
+                show_combo_chart(
+                    df_prod_detail_chart,
+                    "생산 상세 추세",
+                    "기간",
+                    ["계획수량", "실적수량"],
+                    ["계획금액", "실적금액"],
+                )
+            else:
+                st.info("생산 실적이 있는 날짜가 없어 그래프를 표시하지 않습니다.")
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
